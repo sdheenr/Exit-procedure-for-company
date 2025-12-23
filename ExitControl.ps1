@@ -3,7 +3,7 @@ ExitControl.ps1 (PowerShell 5.1 compatible)
 Menu-driven exit/offboarding controls.
 
 Features:
-1) Password prompt before menu (hash-based; default password: Rafic@786786@Dubai@123$)
+1) Password prompt before menu (hash-based)
 2) Toggle HOSTS block list (common upload sites)
 3) Toggle USB Mass Storage disable
 4) Toggle Chrome/Edge Incognito/InPrivate disable (policy)
@@ -21,11 +21,18 @@ Run as Administrator.
 $ErrorActionPreference = "Stop"
 
 # ---------------- CONFIG ----------------
-$StateDir   = "C:\ProgramData\ExitControl"
-$StateFile  = Join-Path $StateDir "state.json"
-$HostsPath  = "$env:WINDIR\System32\drivers\etc\hosts"
+$StateDir    = "C:\ProgramData\ExitControl"
+$StateFile   = Join-Path $StateDir "state.json"
+$HostsPath   = "$env:WINDIR\System32\drivers\etc\hosts"
+$LogDir      = Join-Path $StateDir "logs"
+$ConfigPath  = Join-Path $StateDir "config.json"
+$IntegrityHashFile = Join-Path $StateDir "expected.sha256"
 
-$ScriptPasswordPlain = "Rafic@786786@Dubai@123$"
+$DefaultScriptPasswordHash = $env:EXITCONTROL_PASSWORD_HASH
+if ([string]::IsNullOrWhiteSpace($DefaultScriptPasswordHash)) {
+  # SHA-256 of the legacy default password; only the hash is stored
+  $DefaultScriptPasswordHash = "a6119a077983251821c8650eb7ff22dd5e2c0547ef4be76f5e28d3cbdac10c76"
+}
 
 $BlockDomains = @(
   "drive.google.com",
@@ -39,6 +46,11 @@ $BlockDomains = @(
   "sendgb.com",
   "file.io"
 )
+
+if ($Config.AdditionalBlockDomains) {
+  $BlockDomains += $Config.AdditionalBlockDomains
+  $BlockDomains = $BlockDomains | Select-Object -Unique
+}
 
 $SnipPaths = @(
   "$env:WINDIR\System32\SnippingTool.exe",
@@ -73,16 +85,61 @@ function Ensure-StateDir {
   }
 }
 
+function Ensure-LogDir {
+  if (-not (Test-Path $LogDir)) {
+    New-Item -Path $LogDir -ItemType Directory | Out-Null
+  }
+}
+
 function Get-Sha256Hex([string]$text) {
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $bytes = [System.Text.Encoding]::UTF8.GetBytes($text)
   ($sha.ComputeHash($bytes) | ForEach-Object { $_.ToString("x2") }) -join ""
 }
 
+function Get-DefaultConfig {
+  return @{
+    PasswordPolicy = @{
+      MinLength      = 12
+      RequireUpper   = $true
+      RequireLower   = $true
+      RequireDigit   = $true
+      RequireSpecial = $true
+    }
+    AdditionalBlockDomains = @()
+    Notifications = @{
+      WebhookUrl       = $null
+      WebhookAuthHeader = $null
+    }
+    BackupLimit = 5
+    Integrity = @{
+      ExpectedHashFile = $IntegrityHashFile
+    }
+  }
+}
+
+function Load-Config {
+  if (-not (Test-Path $ConfigPath)) {
+    return (Get-DefaultConfig)
+  }
+
+  try {
+    $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if (-not $cfg) { return (Get-DefaultConfig) }
+    return $cfg
+  } catch {
+    Write-Host "Warning: Failed to parse config.json, using defaults." -ForegroundColor Yellow
+    return (Get-DefaultConfig)
+  }
+}
+
+$Config = Load-Config
+
 function Load-State {
   Ensure-StateDir
   if (Test-Path $StateFile) {
-    return (Get-Content $StateFile -Raw | ConvertFrom-Json)
+    $loaded = (Get-Content $StateFile -Raw | ConvertFrom-Json)
+    return (Ensure-StateShape $loaded)
   }
 
   # initial
@@ -114,8 +171,21 @@ function Load-State {
       BrowserBlockEnabled = $false
     }
     Renames = @() # {Path, BackupPath, Enabled}
+    Audit = @{
+      LastHash = $null
+    }
+    Integrity = @{
+      ExpectedHash = $null
+      LastStatus = "Unknown"
+    }
+    Backups = @{
+      Hosts = @()
+      USBSTOR = @()
+      BrowserPolicies = @()
+      Limit = $Config.BackupLimit
+    }
   }
-  return $state
+  return (Ensure-StateShape $state)
 }
 
 function Save-State($state) {
@@ -123,7 +193,65 @@ function Save-State($state) {
   $state | ConvertTo-Json -Depth 10 | Set-Content -Path $StateFile -Encoding UTF8
 }
 
-function Prompt-ScriptPassword {
+function Ensure-StateShape($state) {
+  if (-not $state.PSObject.Properties["Auth"]) {
+    $state | Add-Member -Name Auth -MemberType NoteProperty -Value @{
+      PasswordHash = $DefaultScriptPasswordHash
+    }
+  }
+
+  $currentHash = [string]$state.Auth.PasswordHash
+  if ([string]::IsNullOrWhiteSpace($currentHash)) {
+    $state.Auth.PasswordHash = $DefaultScriptPasswordHash
+    return $state
+  }
+
+  $trimmed = $currentHash.Trim()
+  $isHex64 = $trimmed -match "^[0-9a-fA-F]{64}$"
+  if (-not $isHex64) {
+    # Migrate legacy/plaintext value to hash
+    $state.Auth.PasswordHash = Get-Sha256Hex $trimmed
+  } else {
+    $state.Auth.PasswordHash = $trimmed.ToLowerInvariant()
+  }
+
+  if (-not $state.PSObject.Properties["Audit"]) {
+    $state | Add-Member -Name Audit -MemberType NoteProperty -Value @{ LastHash = $null }
+  }
+
+  if (-not $state.PSObject.Properties["Integrity"]) {
+    $state | Add-Member -Name Integrity -MemberType NoteProperty -Value @{
+      ExpectedHash = $null
+      LastStatus = "Unknown"
+    }
+  } else {
+    if (-not $state.Integrity.PSObject.Properties["LastStatus"]) {
+      $state.Integrity | Add-Member -Name LastStatus -MemberType NoteProperty -Value "Unknown"
+    }
+  }
+
+  if (-not $state.PSObject.Properties["Backups"]) {
+    $state | Add-Member -Name Backups -MemberType NoteProperty -Value @{
+      Hosts = @()
+      USBSTOR = @()
+      BrowserPolicies = @()
+      Limit = $Config.BackupLimit
+    }
+  } else {
+    if (-not $state.Backups.PSObject.Properties["Limit"]) {
+      $state.Backups | Add-Member -Name Limit -MemberType NoteProperty -Value $Config.BackupLimit
+    }
+    if (-not $state.Backups.PSObject.Properties["Hosts"]) { $state.Backups | Add-Member -Name Hosts -MemberType NoteProperty -Value @() }
+    if (-not $state.Backups.PSObject.Properties["USBSTOR"]) { $state.Backups | Add-Member -Name USBSTOR -MemberType NoteProperty -Value @() }
+    if (-not $state.Backups.PSObject.Properties["BrowserPolicies"]) { $state.Backups | Add-Member -Name BrowserPolicies -MemberType NoteProperty -Value @() }
+  }
+
+  return $state
+}
+
+function Prompt-ScriptPassword($state) {
+  $expectedHash = $state.Auth.PasswordHash
+
   for ($i=1; $i -le 3; $i++) {
 
     # Read as SecureString
@@ -137,8 +265,10 @@ function Prompt-ScriptPassword {
       [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 
-    if ($plain -ceq $ScriptPasswordPlain) {
+    $enteredHash = Get-Sha256Hex $plain
+    if ($enteredHash -ceq $expectedHash) {
       Write-Host "Access granted." -ForegroundColor Green
+      Write-AuditEntry $state "AuthSuccess" @{User=$env:USERNAME; Machine=$env:COMPUTERNAME}
       return
     } else {
       Write-Host "Wrong password. Attempt $i/3" -ForegroundColor Red
@@ -149,11 +279,118 @@ function Prompt-ScriptPassword {
   exit 1
 }
 
+# -------- Logging / notifications / integrity --------
+function Add-BackupPath($state, [string]$Category, [string]$Path) {
+  if (-not $state.Backups) { return }
+  $limit = 5
+  if ($state.Backups.Limit -gt 0) { $limit = $state.Backups.Limit }
+
+  $list = $state.Backups.$Category
+  if (-not $list) { $list = @() }
+  $list += $Path
+  if ($list.Count -gt $limit) {
+    $list = $list[($list.Count-$limit)..($list.Count-1)]
+  }
+  $state.Backups.$Category = $list
+  Save-State $state
+}
+
+function Write-AuditEntry($state, [string]$Action, $Details) {
+  Ensure-LogDir
+  $prevHash = $state.Audit.LastHash
+  if (-not $prevHash) { $prevHash = "" }
+
+  $entry = [pscustomobject]@{
+    TimeUtc = (Get-Date).ToUniversalTime().ToString("o")
+    User    = $env:USERNAME
+    Machine = $env:COMPUTERNAME
+    Action  = $Action
+    Details = $Details
+    PrevHash = $prevHash
+  }
+  $json = $entry | ConvertTo-Json -Compress
+  $newHash = Get-Sha256Hex ("$prevHash`n$json")
+  $state.Audit.LastHash = $newHash
+  $logFile = Join-Path $LogDir ("audit-" + (Get-Date).ToString("yyyyMMdd") + ".log")
+  Add-Content -Path $logFile -Value $json
+  Save-State $state
+}
+
+function Send-Notification($state, [string]$Title, [string]$Body, [string]$Severity="info") {
+  $cfg = $Config
+  if (-not $cfg.Notifications -or [string]::IsNullOrWhiteSpace($cfg.Notifications.WebhookUrl)) { return }
+  try {
+    $headers = @{}
+    if (-not [string]::IsNullOrWhiteSpace($cfg.Notifications.WebhookAuthHeader)) {
+      $parts = $cfg.Notifications.WebhookAuthHeader.Split(":",2)
+      if ($parts.Count -eq 2) { $headers[$parts[0]] = $parts[1] }
+    }
+    $payload = @{
+      title    = $Title
+      body     = $Body
+      severity = $Severity
+      timeUtc  = (Get-Date).ToUniversalTime().ToString("o")
+      machine  = $env:COMPUTERNAME
+    }
+    Invoke-RestMethod -Method Post -Uri $cfg.Notifications.WebhookUrl -Headers $headers -Body ($payload | ConvertTo-Json -Compress) -ContentType "application/json" | Out-Null
+  } catch {
+    Write-Host "Notification failed: $($_.Exception.Message)" -ForegroundColor Yellow
+  }
+}
+
+function Check-Integrity($state) {
+  $path = $PSCommandPath
+  if (-not $path) { $path = $MyInvocation.MyCommand.Path }
+  if (-not (Test-Path $path)) { return $true }
+
+  $expected = $state.Integrity.ExpectedHash
+  if (-not $expected -and (Test-Path $IntegrityHashFile)) {
+    $expected = (Get-Content $IntegrityHashFile -Raw).Trim()
+  }
+
+  $current = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+
+  if (-not $expected) {
+    $state.Integrity.ExpectedHash = $current
+    $state.Integrity.LastStatus = "BaselineCreated"
+    $current | Set-Content -Path $IntegrityHashFile -Encoding ASCII
+    Save-State $state
+    return $true
+  }
+
+  if ($current -ne $expected.ToLowerInvariant()) {
+    $state.Integrity.LastStatus = "Mismatch"
+    Save-State $state
+    Write-Host "WARNING: Script hash mismatch detected. Limited mode only." -ForegroundColor Yellow
+    return $false
+  }
+
+  $state.Integrity.LastStatus = "OK"
+  Save-State $state
+  return $true
+}
+
+function Refresh-IntegrityBaseline($state) {
+  $path = $PSCommandPath
+  if (-not $path) { $path = $MyInvocation.MyCommand.Path }
+  $current = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLowerInvariant()
+  $state.Integrity.ExpectedHash = $current
+  $state.Integrity.LastStatus = "BaselineUpdated"
+  $current | Set-Content -Path $IntegrityHashFile -Encoding ASCII
+  Save-State $state
+  Write-AuditEntry $state "IntegrityBaselineUpdated" @{Hash=$current}
+  Send-Notification $state "ExitControl integrity baseline updated" "New hash: $current" "info"
+}
+
 # -------- HOSTS block --------
 function Backup-HostsIfNeeded($state) {
   if (-not $state.Hosts.BackedUp) {
-    Copy-Item -Path $HostsPath -Destination $state.Hosts.BackupPath -Force
+    $stamp = (Get-Date).ToString("yyyyMMddTHHmmss")
+    $backupPath = Join-Path $StateDir ("hosts.backup-" + $stamp)
+    Copy-Item -Path $HostsPath -Destination $backupPath -Force
+    $state.Hosts.BackupPath = $backupPath
     $state.Hosts.BackedUp = $true
+    Add-BackupPath $state "Hosts" $backupPath
     Save-State $state
   }
 }
@@ -191,6 +428,8 @@ function Set-HostsBlock($state, [bool]$Enable) {
 
   $state.Hosts.Enabled = $Enable
   Save-State $state
+  Write-AuditEntry $state "HostsBlock" @{Enabled=$Enable; Domains=$BlockDomains.Count}
+  Send-Notification $state "ExitControl hosts block toggled" ("Enabled: " + $Enable) "info"
 }
 
 # -------- USB disable --------
@@ -200,6 +439,13 @@ function Backup-USBSTORIfNeeded($state) {
     $val = (Get-ItemProperty -Path $key -Name Start -ErrorAction SilentlyContinue).Start
     $state.USBSTOR.OriginalStart = $val
     $state.USBSTOR.BackedUp = $true
+    $snapshot = @{
+      TimeUtc = (Get-Date).ToUniversalTime().ToString("o")
+      Start = $val
+    } | ConvertTo-Json -Compress
+    $backupPath = Join-Path $StateDir ("usbstor.backup-" + (Get-Date).ToString("yyyyMMddTHHmmss") + ".json")
+    $snapshot | Set-Content -Path $backupPath -Encoding UTF8
+    Add-BackupPath $state "USBSTOR" $backupPath
     Save-State $state
   }
 }
@@ -220,6 +466,8 @@ function Set-USBStorage($state, [bool]$Disable) {
   }
 
   Save-State $state
+  Write-AuditEntry $state "USBStorage" @{Disabled=$Disable}
+  Send-Notification $state "ExitControl USB storage toggle" ("Disabled: " + $Disable) "info"
 }
 
 # -------- Browser policies --------
@@ -234,6 +482,14 @@ function Backup-BrowserPoliciesIfNeeded($state) {
     $state.BrowserPolicies.Original.ChromeIncognitoModeAvailability = $c
     $state.BrowserPolicies.Original.EdgeInPrivateModeAvailability   = $e
     $state.BrowserPolicies.BackedUp = $true
+    $snapshot = @{
+      TimeUtc = (Get-Date).ToUniversalTime().ToString("o")
+      ChromeIncognitoModeAvailability = $c
+      EdgeInPrivateModeAvailability   = $e
+    } | ConvertTo-Json -Compress
+    $backupPath = Join-Path $StateDir ("browserpolicies.backup-" + (Get-Date).ToString("yyyyMMddTHHmmss") + ".json")
+    $snapshot | Set-Content -Path $backupPath -Encoding UTF8
+    Add-BackupPath $state "BrowserPolicies" $backupPath
     Save-State $state
   }
 }
@@ -264,6 +520,8 @@ function Set-BrowserPrivacyPolicies($state, [bool]$DisablePrivateModes) {
   }
 
   Save-State $state
+  Write-AuditEntry $state "BrowserPrivacyPolicies" @{DisabledPrivateModes=$DisablePrivateModes}
+  Send-Notification $state "ExitControl browser privacy toggle" ("Disabled private modes: " + $DisablePrivateModes) "info"
 }
 
 # -------- Controlled renames --------
@@ -300,6 +558,7 @@ function Rename-FileControlled($state, [string]$Path, [bool]$Enable) {
   }
 
   Save-State $state
+  Write-AuditEntry $state "RenameToggle" @{Path=$Path; Enabled=$Enable}
 }
 
 # -------- Firewall browser block --------
@@ -324,10 +583,12 @@ function Set-FirewallBrowserBlock($state, [bool]$Enable) {
   }
 
   Save-State $state
+  Write-AuditEntry $state "FirewallBrowserBlock" @{Enabled=$Enable}
+  Send-Notification $state "ExitControl firewall toggle" ("Browser block enabled: " + $Enable) "info"
 }
 
 # -------- Change local Windows password --------
-function Change-WindowsPassword {
+function Change-WindowsPassword($state) {
   $user = Read-Host "Enter local username to change password (blank = current user)"
   if ([string]::IsNullOrWhiteSpace($user)) { $user = $env:USERNAME }
 
@@ -335,6 +596,8 @@ function Change-WindowsPassword {
     $newPwd = Read-Host "Enter NEW Windows password for '$user'" -AsSecureString
     Set-LocalUser -Name $user -Password $newPwd
     Write-Host "Windows password updated for: $user" -ForegroundColor Green
+    Write-AuditEntry $state "WindowsPasswordChange" @{User=$user}
+    Send-Notification $state "ExitControl password change" ("Local user: " + $user) "warning"
   } catch {
     Write-Host "Failed to change password. This works for LOCAL users only." -ForegroundColor Red
     Write-Host $_.Exception.Message -ForegroundColor Yellow
@@ -361,6 +624,7 @@ function Show-Status($state) {
     if (($r.Path -eq $OpenWithPath) -and $r.Enabled) { $openWithOn = $true }
   }
   $owTxt = "OFF"; if ($openWithOn) { $owTxt = "ON (Aggressive)" }
+  $integrityTxt = $state.Integrity.LastStatus
 
   Write-Host ("HOSTS Blocking:             " + $hostsTxt)
   Write-Host ("USB Mass Storage Disabled:  " + $usbTxt)
@@ -368,6 +632,7 @@ function Show-Status($state) {
   Write-Host ("Firewall Browser Block:     " + $fwTxt)
   Write-Host ("Snipping Tools Disabled:    " + $snipTxt)
   Write-Host ("OpenWith.exe Disabled:      " + $owTxt)
+  Write-Host ("Integrity Status:           " + $integrityTxt)
   Write-Host ("State file:                 " + $StateFile)
   Write-Host "--------------------------------`n" -ForegroundColor Cyan
 }
@@ -411,6 +676,72 @@ Hosts backup: hosts.backup
 "@ | Write-Host
 }
 
+function Test-ExitControlState($state) {
+  $results = [ordered]@{}
+  # Hosts check
+  $marker = $state.Hosts.ManagedMarker
+  $content = @()
+  if (Test-Path $HostsPath) { $content = Get-Content $HostsPath }
+  $results["HostsMarker"] = ($content -contains "$marker BEGIN") -and ($content -contains "$marker END")
+
+  # USB Start value
+  $key = "HKLM:\SYSTEM\CurrentControlSet\Services\USBSTOR"
+  $start = (Get-ItemProperty -Path $key -Name Start -ErrorAction SilentlyContinue).Start
+  $results["USBDisabled"] = ($start -eq 4)
+
+  # Browser policies
+  $chromeKey = "HKLM:\SOFTWARE\Policies\Google\Chrome"
+  $edgeKey   = "HKLM:\SOFTWARE\Policies\Microsoft\Edge"
+  $c = (Get-ItemProperty -Path $chromeKey -Name IncognitoModeAvailability -ErrorAction SilentlyContinue).IncognitoModeAvailability
+  $e = (Get-ItemProperty -Path $edgeKey -Name InPrivateModeAvailability -ErrorAction SilentlyContinue).InPrivateModeAvailability
+  $results["ChromeIncognitoDisabled"] = ($c -eq 1)
+  $results["EdgeInPrivateDisabled"]   = ($e -eq 1)
+
+  # Firewall
+  $fwRules = Get-NetFirewallRule -Group $FwGroup -ErrorAction SilentlyContinue
+  $results["FirewallBrowserRules"] = ($fwRules | Measure-Object).Count -gt 0
+
+  # Renames (Snip/OpenWith)
+  $snipDisabled = $false
+  foreach ($r in $state.Renames) {
+    if (($SnipPaths -contains $r.Path) -and $r.Enabled) { $snipDisabled = $true }
+  }
+  $results["SnippingToolsDisabled"] = $snipDisabled
+  $owDisabled = $false
+  foreach ($r in $state.Renames) {
+    if ($r.Path -eq $OpenWithPath -and $r.Enabled) { $owDisabled = $true }
+  }
+  $results["OpenWithDisabled"] = $owDisabled
+
+  return $results
+}
+
+function Show-Diagnostics($state) {
+  $results = Test-ExitControlState $state
+  Write-Host "`n--- Diagnostics ---" -ForegroundColor Cyan
+  foreach ($k in $results.Keys) {
+    $val = $results[$k]
+    if ($val) { Write-Host ("[PASS] " + $k) -ForegroundColor Green }
+    else { Write-Host ("[FAIL] " + $k) -ForegroundColor Red }
+  }
+  Write-Host "--------------------`n" -ForegroundColor Cyan
+  Write-AuditEntry $state "DiagnosticsRun" $results
+}
+
+function Show-RecentAuditEntries {
+  Ensure-LogDir
+  $files = Get-ChildItem -Path $LogDir -Filter "audit-*.log" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending
+  if (-not $files -or $files.Count -eq 0) {
+    Write-Host "No audit entries found." -ForegroundColor Yellow
+    return
+  }
+  $latest = $files[0].FullName
+  Write-Host "`n--- Recent audit entries ($latest) ---" -ForegroundColor Cyan
+  $lines = Get-Content -Path $latest -Tail 20
+  foreach ($l in $lines) { Write-Host $l }
+  Write-Host "--------------------------------------`n" -ForegroundColor Cyan
+}
+
 function Restore-All($state) {
   # Hosts restore
   if ($state.Hosts.BackedUp -and (Test-Path $state.Hosts.BackupPath)) {
@@ -438,6 +769,8 @@ function Restore-All($state) {
   }
 
   Save-State $state
+  Write-AuditEntry $state "RestoreAll" @{}
+  Send-Notification $state "ExitControl restore" "All settings restored; reboot recommended." "warning"
 }
 
 function Show-Menu {
@@ -455,6 +788,9 @@ function Show-Menu {
   Write-Host "9) Show rollback guide"
   Write-Host "10) Show current status"
   Write-Host "11) Restore ALL (rollback everything)"
+  Write-Host "12) Run diagnostics"
+  Write-Host "13) Refresh integrity baseline"
+  Write-Host "14) View recent audit entries"
   Write-Host "0) Exit"
 }
 
@@ -462,11 +798,16 @@ function Show-Menu {
 Ensure-Admin
 $state = Load-State
 Save-State $state
-Prompt-ScriptPassword
+$IntegrityOk = Check-Integrity $state
+Prompt-ScriptPassword $state
 
 while ($true) {
   Show-Menu
   $choice = Read-Host "Select option"
+  if (-not $IntegrityOk -and ($choice -notin @("0","10","13","12"))) {
+    Write-Host "Integrity mismatch detected. Only Status, Diagnostics, Refresh Baseline, or Exit are allowed." -ForegroundColor Yellow
+    continue
+  }
   switch ($choice) {
     "1" { Set-HostsBlock $state (-not $state.Hosts.Enabled) }
     "2" { Set-USBStorage $state (-not $state.USBSTOR.Enabled) }
@@ -487,11 +828,14 @@ while ($true) {
       }
       Rename-FileControlled $state $OpenWithPath (-not $owOn)
     }
-    "7" { Change-WindowsPassword }
+    "7" { Change-WindowsPassword $state }
     "8" { Print-Checklist }
     "9" { Print-RollbackGuide }
     "10" { Show-Status $state }
     "11" { Restore-All $state; Write-Host "Restored. Reboot recommended." -ForegroundColor Green }
+    "12" { Show-Diagnostics $state }
+    "13" { Refresh-IntegrityBaseline $state; $IntegrityOk = $true }
+    "14" { Show-RecentAuditEntries }
     "0" { break }
     default { Write-Host "Invalid option." -ForegroundColor Red }
   }
