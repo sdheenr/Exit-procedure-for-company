@@ -3,7 +3,7 @@ ExitControl.ps1 (PowerShell 5.1 compatible)
 Menu-driven exit/offboarding controls.
 
 Features:
-1) Password prompt before menu (hash-based; default password: Rafic@786786@Dubai@123$)
+1) Password prompt before menu (hash-based)
 2) Toggle HOSTS block list (common upload sites)
 3) Toggle USB Mass Storage disable
 4) Toggle Chrome/Edge Incognito/InPrivate disable (policy)
@@ -25,7 +25,11 @@ $StateDir   = "C:\ProgramData\ExitControl"
 $StateFile  = Join-Path $StateDir "state.json"
 $HostsPath  = "$env:WINDIR\System32\drivers\etc\hosts"
 
-$ScriptPasswordPlain = "Rafic@786786@Dubai@123$"
+$DefaultScriptPasswordHash = $env:EXITCONTROL_PASSWORD_HASH
+if ([string]::IsNullOrWhiteSpace($DefaultScriptPasswordHash)) {
+  # SHA-256 of the legacy default password; only the hash is stored
+  $DefaultScriptPasswordHash = "a6119a077983251821c8650eb7ff22dd5e2c0547ef4be76f5e28d3cbdac10c76"
+}
 
 $BlockDomains = @(
   "drive.google.com",
@@ -82,7 +86,8 @@ function Get-Sha256Hex([string]$text) {
 function Load-State {
   Ensure-StateDir
   if (Test-Path $StateFile) {
-    return (Get-Content $StateFile -Raw | ConvertFrom-Json)
+    $loaded = (Get-Content $StateFile -Raw | ConvertFrom-Json)
+    return (Ensure-AuthState $loaded)
   }
 
   # initial
@@ -115,7 +120,7 @@ function Load-State {
     }
     Renames = @() # {Path, BackupPath, Enabled}
   }
-  return $state
+  return (Ensure-AuthState $state)
 }
 
 function Save-State($state) {
@@ -123,7 +128,34 @@ function Save-State($state) {
   $state | ConvertTo-Json -Depth 10 | Set-Content -Path $StateFile -Encoding UTF8
 }
 
-function Prompt-ScriptPassword {
+function Ensure-AuthState($state) {
+  if (-not $state.PSObject.Properties["Auth"]) {
+    $state | Add-Member -Name Auth -MemberType NoteProperty -Value @{
+      PasswordHash = $DefaultScriptPasswordHash
+    }
+  }
+
+  $currentHash = [string]$state.Auth.PasswordHash
+  if ([string]::IsNullOrWhiteSpace($currentHash)) {
+    $state.Auth.PasswordHash = $DefaultScriptPasswordHash
+    return $state
+  }
+
+  $trimmed = $currentHash.Trim()
+  $isHex64 = $trimmed -match "^[0-9a-fA-F]{64}$"
+  if (-not $isHex64) {
+    # Migrate legacy/plaintext value to hash
+    $state.Auth.PasswordHash = Get-Sha256Hex $trimmed
+  } else {
+    $state.Auth.PasswordHash = $trimmed.ToLowerInvariant()
+  }
+
+  return $state
+}
+
+function Prompt-ScriptPassword($state) {
+  $expectedHash = $state.Auth.PasswordHash
+
   for ($i=1; $i -le 3; $i++) {
 
     # Read as SecureString
@@ -137,7 +169,8 @@ function Prompt-ScriptPassword {
       [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr)
     }
 
-    if ($plain -ceq $ScriptPasswordPlain) {
+    $enteredHash = Get-Sha256Hex $plain
+    if ($enteredHash -ceq $expectedHash) {
       Write-Host "Access granted." -ForegroundColor Green
       return
     } else {
@@ -462,7 +495,7 @@ function Show-Menu {
 Ensure-Admin
 $state = Load-State
 Save-State $state
-Prompt-ScriptPassword
+Prompt-ScriptPassword $state
 
 while ($true) {
   Show-Menu
