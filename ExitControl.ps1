@@ -28,6 +28,44 @@ $LogDir      = Join-Path $StateDir "logs"
 $ConfigPath  = Join-Path $StateDir "config.json"
 $IntegrityHashFile = Join-Path $StateDir "expected.sha256"
 
+function Get-DefaultConfig {
+  return @{
+    PasswordPolicy = @{
+      MinLength      = 12
+      RequireUpper   = $true
+      RequireLower   = $true
+      RequireDigit   = $true
+      RequireSpecial = $true
+    }
+    AdditionalBlockDomains = @()
+    Notifications = @{
+      WebhookUrl       = $null
+      WebhookAuthHeader = $null
+    }
+    BackupLimit = 5
+    Integrity = @{
+      ExpectedHashFile = $IntegrityHashFile
+    }
+  }
+}
+
+function Load-Config {
+  if (-not (Test-Path $ConfigPath)) {
+    return (Get-DefaultConfig)
+  }
+
+  try {
+    $cfg = Get-Content $ConfigPath -Raw | ConvertFrom-Json
+    if (-not $cfg) { return (Get-DefaultConfig) }
+    return $cfg
+  } catch {
+    Write-Host "Warning: Failed to parse config.json, using defaults." -ForegroundColor Yellow
+    return (Get-DefaultConfig)
+  }
+}
+
+$Config = Load-Config
+
 $DefaultScriptPasswordHash = $env:EXITCONTROL_PASSWORD_HASH
 if ([string]::IsNullOrWhiteSpace($DefaultScriptPasswordHash)) {
   # SHA-256 of the legacy default password; only the hash is stored
