@@ -1,0 +1,27 @@
+# Build output from ps2exe
+*.exe
+*.pdb
+
+# Never commit runtime state: it holds a password hash, webhook tokens, and the
+# recorded original settings of a real machine.
+state.json
+config.json
+expected.sha256
+*.backup
+*.backup-*
+*.disabled
+logs/
+audit-*.log
+
+# Windows / editor noise
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*~
+*.swp
+.vscode/
+.idea/
+
+# OneDrive conflict copies
+*-*conflict*

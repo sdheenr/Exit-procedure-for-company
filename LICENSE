@@ -1,0 +1,94 @@
+PROPRIETARY SOFTWARE LICENCE
+
+Copyright (c) 2026 [COMPANY NAME]. All rights reserved.
+
+CONFIDENTIAL AND PROPRIETARY
+
+This software, together with its source code, configuration and accompanying
+documentation (the "Software"), is the confidential and proprietary property of
+[COMPANY NAME] (the "Owner"). The Software is licensed, not sold. No ownership
+right or title passes to any recipient.
+
+1. GRANT
+
+   The Owner grants authorised IT and security personnel of the Owner a
+   non-exclusive, non-transferable, revocable right to install and run the
+   Software on devices owned or controlled by the Owner, solely for the Owner's
+   internal offboarding and endpoint-administration purposes.
+
+   No other right is granted, whether by implication, estoppel or otherwise.
+
+2. RESTRICTIONS
+
+   Except with the Owner's prior written consent, no person may:
+
+   a. copy, publish, distribute, sell, sublicense, rent, lease or otherwise
+      make the Software available to any third party;
+   b. disclose the Software, or any part of it, to anyone other than personnel
+      of the Owner who need it for the purposes in Clause 1;
+   c. modify, adapt, translate or create derivative works from the Software;
+   d. reverse engineer, decompile or disassemble the Software, or defeat any
+      packaging, signing or access control applied to it, except to the extent
+      such a restriction is prohibited by applicable law;
+   e. remove or obscure any proprietary notice, including this one.
+
+3. AUTHORISED USE ONLY
+
+   The Software applies restrictive controls to a computer, including network
+   blocking, removable-storage blocking, browser policy enforcement and account
+   password changes. It must be used only:
+
+   a. on devices owned or lawfully controlled by the Owner;
+   b. by personnel expressly authorised to administer those devices; and
+   c. in accordance with the Owner's policies and all applicable law,
+      including employment, privacy, data-protection and computer-misuse law.
+
+   Use of the Software on any device, or against any person, without proper
+   authorisation is strictly prohibited and may be unlawful.
+
+4. CONFIDENTIALITY
+
+   Each recipient shall keep the Software confidential, protect it with at
+   least the care it applies to its own confidential information of like
+   importance, and use it only as permitted by this Licence. This obligation
+   survives termination.
+
+5. NO WARRANTY
+
+   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+   FITNESS FOR A PARTICULAR PURPOSE, TITLE AND NON-INFRINGEMENT.
+
+   The Software modifies system configuration and is not a guaranteed barrier
+   against data exfiltration. The Owner does not warrant that it will prevent
+   any particular act, that its controls cannot be bypassed, or that its
+   rollback will restore any given system to a prior state.
+
+6. LIMITATION OF LIABILITY
+
+   TO THE MAXIMUM EXTENT PERMITTED BY LAW, IN NO EVENT SHALL THE OWNER OR ANY
+   CONTRIBUTOR BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+   AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+   CONNECTION WITH THE SOFTWARE OR ITS USE, INCLUDING WITHOUT LIMITATION ANY
+   LOSS OF DATA, LOSS OF ACCESS TO A SYSTEM OR ACCOUNT, BUSINESS INTERRUPTION,
+   OR ANY INDIRECT OR CONSEQUENTIAL LOSS.
+
+   Nothing in this Licence excludes liability which cannot lawfully be
+   excluded.
+
+7. TERMINATION
+
+   This Licence terminates automatically, without notice, on any breach of it,
+   and on the cessation of a recipient's engagement with the Owner. On
+   termination each recipient shall cease all use of the Software and destroy
+   all copies in its possession or control.
+
+8. GOVERNING LAW
+
+   This Licence is governed by the laws of [JURISDICTION], and the courts of
+   [JURISDICTION] shall have exclusive jurisdiction over any dispute arising
+   from it.
+
+Before relying on this Licence, replace [COMPANY NAME] and [JURISDICTION], and
+have it reviewed by qualified legal counsel. It is a starting point, not legal
+advice.
